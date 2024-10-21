@@ -1,0 +1,10 @@
+test_upload.py
+upload.py
+train_data/*
+huggingface
+logs/*
+*.log
+*.pyc
+*.pyo
+*.pyd
+*.pyz
