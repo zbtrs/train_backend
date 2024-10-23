@@ -31,7 +31,7 @@ def process_image(image_path):
     width, height = img.size
     target_size = 1024
     
-    target_area = (target_size * target_size) * (2/3)
+    target_area = (target_size * target_size) * (1/2)
     current_area = width * height
     scale = (target_area / current_area) ** 0.5
     

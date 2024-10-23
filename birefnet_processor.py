@@ -1,8 +1,10 @@
 import os
+import numpy as np
 from transformers import AutoModelForImageSegmentation
 from PIL import Image
 import torch
 from torchvision import transforms
+from scipy.ndimage import gaussian_filter
 
 class BiRefNetProcessor:
     def __init__(self, gpu_id=0):
@@ -31,7 +33,18 @@ class BiRefNetProcessor:
         
         result.paste(image.convert("RGB"), (0, 0), mask)
 
-        return result
+        result_array = np.array(result)
+        
+        alpha_channel = result_array[:, :, 3].astype(float)
+        alpha_channel = gaussian_filter(alpha_channel, sigma=1)
+        
+        threshold = 128
+        alpha_channel[alpha_channel < threshold] = 0
+        alpha_channel[alpha_channel >= threshold] = 255
+        
+        result_array[:, :, 3] = alpha_channel.astype(np.uint8)
+        
+        return Image.fromarray(result_array)
 
     def process_directory(self, input_dir):
         for filename in os.listdir(input_dir):
