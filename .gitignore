@@ -8,3 +8,6 @@ logs/*
 *.pyo
 *.pyd
 *.pyz
+test_*
+config.yaml
+input/

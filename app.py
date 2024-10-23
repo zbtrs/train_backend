@@ -1,6 +1,5 @@
 from fastapi import FastAPI, Form, HTTPException
 from pydantic import BaseModel
-from typing import List
 import os
 import time
 import aiohttp
@@ -9,49 +8,97 @@ import subprocess
 import uuid
 import threading
 import GPUtil
+from birefnet_processor import BiRefNetProcessor
+from PIL import Image,ImageChops
 
 app = FastAPI()
 
+birefnet_processor = BiRefNetProcessor(gpu_id=0)
+
 class TrainRequest(BaseModel):
     name: str
-    urls: List[str]
     prompt: str
 
 task_map = {}
+
+def process_image(image_path):
+    img = Image.open(image_path).convert("RGBA")
+    
+    bbox = ImageChops.difference(img, Image.new('RGBA', img.size, (0, 0, 0, 0))).getbbox()
+    if bbox:
+        img = img.crop(bbox)
+    
+    width, height = img.size
+    target_size = 1024
+    
+    target_area = (target_size * target_size) * (2/3)
+    current_area = width * height
+    scale = (target_area / current_area) ** 0.5
+    
+    new_width = int(width * scale)
+    new_height = int(height * scale)
+    
+    if new_width > target_size or new_height > target_size:
+        scale = target_size / max(new_width, new_height)
+        new_width = int(new_width * scale)
+        new_height = int(new_height * scale)
+    
+    img = img.resize((new_width, new_height), Image.LANCZOS)
+    
+    new_img = Image.new('RGBA', (target_size, target_size), (0, 0, 0, 0))
+    
+    paste_x = (target_size - new_width) // 2
+    paste_y = (target_size - new_height) // 2
+    
+    new_img.paste(img, (paste_x, paste_y), img)
+    
+    new_img.save(image_path, "PNG")
 
 @app.post("/train")
 async def train_lora(
     name: str = Form(...),
     prompt: str = Form(...),
-    images: str = Form(...) 
+    video_url: str = Form(...)
 ):
-    base_dir = f"./train_data/{name}"
-    # timestamp = int(time.time())
-    train_dir = f"{base_dir}/10_data"
+    input_dir = f"./input/{name}"
+    os.makedirs(input_dir, exist_ok=True)
+    
+    train_dir = f"./train_data/{name}/10_data"
     os.makedirs(train_dir, exist_ok=True)
 
-    image_urls = images.split(',')
-    image_urls = [url.lstrip('@') for url in image_urls]
-
-    async def download_image(session, url, index):
-        try:
-            async with session.get(url) as response:
-                if response.status == 200:
-                    image_path = f"{train_dir}/{index}.jpg"
-                    with open(image_path, "wb") as f:
-                        f.write(await response.read())
-                    
-                    txt_path = f"{train_dir}/{index}.txt"
-                    with open(txt_path, "w", encoding="utf-8") as f:
-                        f.write(prompt)
-                else:
-                    raise HTTPException(status_code=400, detail=f"无法下载图片: {url}")
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"下载图片时出错: {str(e)}")
+    video_path = f"{input_dir}/{name}.mp4"
 
     async with aiohttp.ClientSession() as session:
-        tasks = [download_image(session, url, i+1) for i, url in enumerate(image_urls)]
-        await asyncio.gather(*tasks)
+        try:
+            async with session.get(video_url) as response:
+                if response.status == 200:
+                    with open(video_path, "wb") as f:
+                        f.write(await response.read())
+                else:
+                    raise HTTPException(status_code=400, detail=f"无法下载视频: {video_url}")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"下载视频时出错: {str(e)}")
+
+    try:
+        duration_cmd = f"ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 {video_path}"
+        duration = float(subprocess.check_output(duration_cmd, shell=True).decode('utf-8').strip())
+        
+        interval = duration / 8
+        
+        for i in range(8):
+            time_point = i * interval
+            output_path = f"{train_dir}/{i+1}.png"
+            ffmpeg_cmd = f"ffmpeg -i {video_path} -ss {time_point} -frames:v 1 {output_path}"
+            subprocess.run(ffmpeg_cmd, shell=True, check=True)
+            
+            birefnet_processor.extract_object(output_path).save(output_path)
+            process_image(output_path)
+            
+            txt_path = f"{train_dir}/{i+1}.txt"
+            with open(txt_path, "w", encoding="utf-8") as f:
+                f.write(prompt)
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=500, detail=f"处理视频时出错: {str(e)}")
 
     gpus = GPUtil.getGPUs()
     if not gpus:
@@ -64,7 +111,7 @@ async def train_lora(
     
     cmd = f"conda run -n lora-scripts CUDA_VISIBLE_DEVICES={gpu_id} ./lora-scripts/train_ar.sh {name}"
     print(cmd)
-    # process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
     def run_process(cmd):
         process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, universal_newlines=True)
         
