@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Form, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import os
 import time
@@ -53,6 +54,10 @@ def process_image(image_path):
     new_img.paste(img, (paste_x, paste_y), img)
     
     new_img.save(image_path, "PNG")
+
+@app.get("/is_alive")
+async def is_alive():
+    return JSONResponse(content={"status": "alive"}, status_code=200)
 
 @app.post("/train")
 async def train_lora(
